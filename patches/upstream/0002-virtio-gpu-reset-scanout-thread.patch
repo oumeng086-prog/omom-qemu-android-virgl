@@ -1,0 +1,91 @@
+From: oumeng086-prog <oumeng086-prog@users.noreply.github.com>
+Subject: [PATCH 2/2] virtio-gpu: do not touch the GL context from the vCPU
+ thread on reset
+
+virtio_gpu_gl_reset() runs in the context of the thread that wrote the
+device reset register, i.e. a TCG vCPU thread.  It calls
+virtio_gpu_virgl_reset_scanout() -> egl_scanout_disable() ->
+egl_fb_destroy() -> glDeleteFramebuffers(), which requires the display EGL
+context to be current on that thread.  It is not, and hosts whose GL
+implementation dereferences the missing context (observed on Android with
+both zink and llvmpipe) crash:
+
+  #01 egl_fb_destroy                ui/egl-helpers.c
+  #02 egl_scanout_disable           ui/egl-headless.c
+  #04 virtio_gpu_virgl_reset_scanout
+  #05 virtio_gpu_gl_reset           hw/display/virtio-gpu-gl.c
+  #11 do_st_mmio_leN                accel/tcg/cputlb.c
+
+Move the scanout/GL cleanup to the main loop: add a VirtIOGPUClass
+reset_scanout callback, invoke it from the existing virtio_gpu_reset_bh()
+before reset_finished is signalled, and reduce virtio_gpu_gl_reset() to
+setting renderer_state to RS_RESET.
+
+Signed-off-by: oumeng086-prog <oumeng086-prog@users.noreply.github.com>
+---
+# virtio-gpu: run scanout/GL cleanup on the main loop thread.
+#
+# virtio_gpu_gl_reset() runs on the TCG vCPU thread when the guest writes
+# the reset register. Calling GL there crashes on Android (no current EGL
+# context on that thread). Defer the cleanup into the existing reset_bh.
+
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -1731,6 +1731,11 @@
+         qemu_console_set_surface(g->parent_obj.scanout[i].con, NULL);
+     }
+ 
++    /* scanout/GL cleanup must run here, on the main loop thread */
++    if (vgc->reset_scanout) {
++        vgc->reset_scanout(g);
++    }
++
+     g->reset_finished = true;
+     qemu_cond_signal(&g->reset_cond);
+ }
+--- a/hw/display/virtio-gpu-gl.c
++++ b/hw/display/virtio-gpu-gl.c
+@@ -99,7 +99,8 @@
+      * thread, and when the renderer is unblocked.
+      */
+     if (gl->renderer_state == RS_INITED) {
+-        virtio_gpu_virgl_reset_scanout(g);
++        /* scanout cleanup is deferred to virtio_gpu_reset_bh() which runs
++         * on the main loop thread (reset_scanout class callback). */
+         gl->renderer_state = RS_RESET;
+     }
+ }
+@@ -209,6 +210,15 @@
+      */
+ }
+ 
++static void virtio_gpu_gl_reset_scanout(VirtIOGPU *g)
++{
++    VirtIOGPUGL *gl = VIRTIO_GPU_GL(g);
++
++    if (gl->renderer_state == RS_INITED) {
++        virtio_gpu_virgl_reset_scanout(g);
++    }
++}
++
+ static void virtio_gpu_gl_class_init(ObjectClass *klass, const void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -222,6 +232,7 @@
+     vgc->update_cursor_data = virtio_gpu_gl_update_cursor_data;
+ 
+     vgc->resource_destroy = virtio_gpu_virgl_resource_destroy;
++    vgc->reset_scanout = virtio_gpu_gl_reset_scanout;
+     vdc->realize = virtio_gpu_gl_device_realize;
+     vdc->unrealize = virtio_gpu_gl_device_unrealize;
+     vdc->reset = virtio_gpu_gl_reset;
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -234,6 +234,7 @@
+     void (*resource_destroy)(VirtIOGPU *g,
+                              struct virtio_gpu_simple_resource *res,
+                              Error **errp);
++    void (*reset_scanout)(VirtIOGPU *g);
+ };
+ 
+ struct virtio_gpu_virgl_context_fence {
