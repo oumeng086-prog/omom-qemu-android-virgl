@@ -3,7 +3,7 @@
 param(
     [string]$Launcher = "/data/data/com.termux/files/home/tx_vm_gl.sh",
     [int]$TimeoutSec = 900,
-    [string]$Serial = "8d3b7eb9"
+    $Serial = $env:ANDROID_SERIAL  # set ANDROID_SERIAL to your device serial
 )
 $ErrorActionPreference = 'Continue'
 $ADB = 'C:\Users\q1581\android-sdk\platform-tools\adb.exe'

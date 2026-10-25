@@ -1,0 +1,8 @@
+prefix=/root/stubs
+libdir=${prefix}
+includedir=${prefix}/include
+Name: gbm
+Description: gbm stub for Android
+Version: 21.0.0
+Libs: -L${libdir} -lgbm
+Cflags: -I${includedir}

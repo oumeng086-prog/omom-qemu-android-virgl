@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 mkdir -p /root/apkdisk
-cp /mnt/d/qemu-android/apk/chaoxing.apk /root/apkdisk/
+cp "${APK_SRC:-./app.apk}" /root/apkdisk/
 ls -lh /root/apkdisk/
 
 rm -f /root/apkdisk.img

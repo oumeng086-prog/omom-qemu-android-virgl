@@ -8,7 +8,7 @@ echo "qemu pid=$q  tid  ->  cpu"
 echo "--- 线程当前所在 CPU ---"
 for t in /proc/$q/task/*; do
   tid=${t#/proc/$q/task/}
-  cpu=$(awk '{print $39}' $t/stat 2>/dev/null)
+  cpu=$(sed 's/.*) //' | awk '{print $36}' $t/stat 2>/dev/null)
   utime=$(awk '{print $14}' $t/stat 2>/dev/null)
   echo "tid=$tid cpu=$cpu utime=$utime"
 done | sort -t= -k4 -rn | head -12

@@ -1,0 +1,8 @@
+prefix=/root/work/virglrenderer-virglrenderer-1.3.0
+libdir=/root/sysroot/opt/generic/lib
+includedir=${prefix}/src
+Name: virglrenderer
+Description: virglrenderer generic (mesa EGL)
+Version: 1.3.0
+Libs: -L${libdir} -lvirglrenderer
+Cflags: -I${includedir}

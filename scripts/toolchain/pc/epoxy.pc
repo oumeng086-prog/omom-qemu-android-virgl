@@ -1,0 +1,8 @@
+prefix=/root/stubs
+libdir=/root/sysroot/opt/generic/lib
+includedir=${prefix}/include
+Name: epoxy
+Description: epoxy generic (android, mesa EGL)
+Version: 1.5.10
+Libs: -L${libdir} -lepoxy -L/root/ndk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/30 -lGLESv2 -lEGL
+Cflags: -I${includedir}

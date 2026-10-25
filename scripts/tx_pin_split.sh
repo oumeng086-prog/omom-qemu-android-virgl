@@ -23,7 +23,7 @@ echo "--- 线程名与落点 ---"
 for t in /proc/$q/task/*; do
   tid=${t##*/}
   comm=$(cat $t/comm 2>/dev/null)
-  cpu=$(awk '{print $39}' $t/stat 2>/dev/null)
+  cpu=$(sed 's/.*) //' | awk '{print $36}' $t/stat 2>/dev/null)
   case "$comm" in CPU*|*TCG*) echo "  [vCPU] tid=$tid comm=$comm cpu=$cpu" ;; esac
 done | head -6
 

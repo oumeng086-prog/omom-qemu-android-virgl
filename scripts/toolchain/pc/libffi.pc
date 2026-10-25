@@ -1,0 +1,11 @@
+prefix=/root/sysroot
+exec_prefix=${prefix}
+libdir=/root/sysroot/lib
+toolexeclibdir=${libdir}
+includedir=/root/sysroot/include
+
+Name: libffi
+Description: Library supporting Foreign Function Interfaces
+Version: 3.8.0
+Libs: -L${toolexeclibdir} -lffi
+Cflags: -I${includedir}
