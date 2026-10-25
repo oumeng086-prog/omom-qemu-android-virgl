@@ -23,9 +23,29 @@ Size: 3 files, 5 hunks, +18 −1 (`hw/display/virtio-gpu-gl.c`, `hw/display/virt
 |---|---|
 | GitLab merge request | **impossible** — `qemu-project/qemu` has MRs disabled; `/-/merge_requests/new` returns 404 and the project description states "Pull Requests are ignored" |
 | GitLab issue | not filed. The issue page exists but its body editor is a ProseMirror contenteditable that does not accept programmatic input; nothing was submitted |
-| the second patch (Android surfaceless EGL) | **not sent**: it does not apply to `master` — upstream changed `ui/egl-helpers.c` and the shape of `egl_scanout_disable()`, so it needs a real rebase first |
+| the second patch (Android surfaceless EGL) | **not sent yet**. It has since been rebased onto master — see below — and is ready to go |
 
-## Tracking
+## The second patch, rebased onto master
+
+Upstream moved under the old patch, so this was a rewrite, not a mechanical rebase:
+
+| old hunk | disposition |
+|---|---|
+| `ui/egl-headless.c`, bind `qemu_egl_rn_ctx` in `egl_scanout_disable()` | **dropped** — upstream now calls `eglMakeCurrent()` there itself |
+| `ui/console-gl.c`, Android short-circuit in `surface_gl_create_texture_from_fd()` | **dropped** — not needed for this path, and an Android-only behaviour change would be rejected |
+| `#ifdef __ANDROID__` for surface type / ES3 | **replaced** — `qemu_egl_init_dpy()` takes the surface type and the GLES renderable type as arguments, so X11/GBM/Win32 keep their behaviour |
+| Android-only `qemu_egl_init_dpy_android()` | **replaced** — generic `qemu_egl_init_dpy_surfaceless()`, called as a fallback when no DRM render node exists |
+
+Result: 2 files, +55 −13, 168-line patch, branch `ui-surfaceless-platform` on the fork
+(`94f028f`, based on `master` @ `d731492`).
+
+Verified before sending:
+
+- compiles clean against master (`ninja -C build libsystem.a.p/ui_egl-helpers.c.o
+  libsystem.a.p/ui_egl-headless.c.o`, no warnings)
+- `scripts/checkpatch.pl`: `total: 0 errors, 0 warnings, 117 lines checked`
+
+
 
 - patchwork (should appear after moderation):
   https://patchwork.ozlabs.org/project/qemu-devel/list/?submitter=q15817976513%40163.com
