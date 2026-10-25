@@ -1,6 +1,6 @@
-From 875645e62cd9dfb962f89110c199a00720b3e26a Mon Sep 17 00:00:00 2001
-From: oumeng <oumeng086-prog@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 02:12:09 +0800
+From 22e2b5dc721184fd6e0b94c9489e7cb1f34b6c94 Mon Sep 17 00:00:00 2001
+From: oumeng <q15817976513@163.com>
+Date: Mon, 26 Oct 2026 02:29:51 +0800
 Subject: [PATCH] virtio-gpu: run scanout reset cleanup on the main loop thread
 
 virtio_gpu_gl_reset() executes in the context of the thread that wrote the
@@ -24,7 +24,7 @@ callback, invoke it from the existing virtio_gpu_reset_bh() before
 reset_finished is signalled, and reduce virtio_gpu_gl_reset() to setting
 renderer_state to RS_RESET.
 
-Signed-off-by: oumeng <oumeng086-prog@users.noreply.github.com>
+Signed-off-by: oumeng <q15817976513@163.com>
 ---
  hw/display/virtio-gpu-gl.c     | 13 ++++++++++++-
  hw/display/virtio-gpu.c        |  5 +++++
