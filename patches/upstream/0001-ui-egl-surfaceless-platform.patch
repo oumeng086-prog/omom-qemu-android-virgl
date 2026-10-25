@@ -1,201 +1,168 @@
-From: oumeng086-prog <oumeng086-prog@users.noreply.github.com>
-Subject: [PATCH 1/2] ui/egl: support surfaceless EGL platforms for
- android/headless hosts
+From 94f028f81a1cb8a5c6ef8500e11328ffb89059f5 Mon Sep 17 00:00:00 2001
+From: oumeng <q15817976513@163.com>
+Date: Mon, 26 Oct 2026 02:51:23 +0800
+Subject: [PATCH] ui/egl: add a surfaceless platform fallback for headless
+ hosts
 
-egl_rendernode_init() requires a DRM render node through
-qemu_drm_rendernode_open()/gbm_create_device().  Hosts that expose GL/GLES
-only through a surfaceless platform (Android applications, some container
-images) have no /dev/dri/renderD*, so -display egl-headless fails to
-initialise at all.
+egl_init() reaches the GPU through a DRM render node: egl_rendernode_init()
+opens one with qemu_drm_rendernode_open() and builds a gbm device from it.
+A host that exposes GL/GLES without /dev/dri/renderD* - an application
+sandbox on Android is one, a container without device passthrough is
+another - therefore cannot use -display egl-headless at all; init fails with
+"egl: no drm render node available".
 
-Fall back to EGL_PLATFORM_SURFACELESS_MESA when no render node is available:
+Fall back to EGL_MESA_platform_surfaceless when the render node is missing.
+Two details differ from the window-system platforms:
 
-  * choose pbuffer-only configs, which is the single surface type a
-    surfaceless platform advertises;
-  * request an OpenGL ES 3 context.  The display shaders in ui/shader are
-    "#version 300 es", so an ES2 context is not sufficient;
-  * keep FBO creation, use and destruction on the display context, since
-    GLES3 shares textures between contexts but not framebuffer objects.
+  * a surfaceless display only advertises pbuffer configs, so the config
+    cannot ask for EGL_WINDOW_BIT;
+  * the display shaders in ui/shader are "#version 300 es", so the GLES
+    renderable has to be EGL_OPENGL_ES3_BIT rather than EGL_OPENGL_ES2_BIT.
 
-No change for hosts that do provide a render node.
+Both are passed into qemu_egl_init_dpy() instead of being hardcoded, so the
+X11/GBM/Win32 paths keep their existing behaviour.
 
-Signed-off-by: oumeng086-prog <oumeng086-prog@users.noreply.github.com>
+Tested on an aarch64 Android host: -display egl-headless,gl=es reaches the
+GPU through Mesa's surfaceless platform, and the guest's SurfaceFlinger
+reports "virgl (zink Vulkan ... ), OpenGL ES 3.2".
+
+Signed-off-by: oumeng <q15817976513@163.com>
 ---
-# Android: use surfaceless EGL platform, pbuffer configs, ES3 context
-# and bind the display GL context around egl-headless FBO operations.
+ include/ui/egl-helpers.h |  1 +
+ ui/egl-helpers.c         | 67 ++++++++++++++++++++++++++++++++--------
+ 2 files changed, 55 insertions(+), 13 deletions(-)
 
+diff --git a/include/ui/egl-helpers.h b/include/ui/egl-helpers.h
+index 533d9af..aa03215 100644
+--- a/include/ui/egl-helpers.h
++++ b/include/ui/egl-helpers.h
+@@ -70,6 +70,7 @@ EGLDisplay qemu_egl_get_display(EGLNativeDisplayType native,
+ 
+ int qemu_egl_init_dpy_x11(EGLNativeDisplayType dpy, DisplayGLMode mode);
+ int qemu_egl_init_dpy_mesa(EGLNativeDisplayType dpy, DisplayGLMode mode);
++int qemu_egl_init_dpy_surfaceless(DisplayGLMode mode);
+ 
+ #endif
+ 
+diff --git a/ui/egl-helpers.c b/ui/egl-helpers.c
+index cb9c1e8..d3057ae 100644
 --- a/ui/egl-helpers.c
 +++ b/ui/egl-helpers.c
-@@ -121,9 +121,15 @@
-         glGenFramebuffers(1, &fb->framebuffer);
-     }
+@@ -542,10 +542,12 @@ EGLDisplay qemu_egl_get_display(EGLNativeDisplayType native,
  
-+#ifdef __ANDROID__
-+    glBindFramebuffer(GL_FRAMEBUFFER, fb->framebuffer);
-+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-+                           GL_TEXTURE_2D, fb->texture, 0);
-+#else
-     glBindFramebuffer(GL_FRAMEBUFFER_EXT, fb->framebuffer);
-     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
-                               GL_TEXTURE_2D, fb->texture, 0);
-+#endif
- }
- 
- void egl_fb_setup_new_tex(egl_fb *fb, int width, int height)
-@@ -539,12 +545,19 @@
-     return dpy;
- }
- 
-+#ifdef __ANDROID__
-+/* surfaceless platform only advertises pbuffer configs */
-+#define QEMU_EGL_SURFACE_TYPE EGL_PBUFFER_BIT
-+#else
-+#define QEMU_EGL_SURFACE_TYPE EGL_WINDOW_BIT
-+#endif
-+
  static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
                               EGLenum platform,
-                              DisplayGLMode mode)
+-                             DisplayGLMode mode)
++                             DisplayGLMode mode,
++                             EGLint surface_type,
++                             EGLint gles_renderable)
  {
-     static const EGLint conf_att_core[] = {
+-    static const EGLint conf_att_core[] = {
 -        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-+        EGL_SURFACE_TYPE, QEMU_EGL_SURFACE_TYPE,
++    EGLint conf_att_core[] = {
++        EGL_SURFACE_TYPE, surface_type,
          EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
          EGL_RED_SIZE,   5,
          EGL_GREEN_SIZE, 5,
-@@ -553,8 +566,12 @@
+@@ -553,9 +555,9 @@ static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
+         EGL_ALPHA_SIZE, 0,
          EGL_NONE,
      };
-     static const EGLint conf_att_gles[] = {
+-    static const EGLint conf_att_gles[] = {
 -        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-+        EGL_SURFACE_TYPE, QEMU_EGL_SURFACE_TYPE,
-+#ifdef __ANDROID__
-+        EGL_RENDERABLE_TYPE, 0x00000040 /* EGL_OPENGL_ES3_BIT */,
-+#else
-         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-+#endif
+-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
++    EGLint conf_att_gles[] = {
++        EGL_SURFACE_TYPE, surface_type,
++        EGL_RENDERABLE_TYPE, gles_renderable,
          EGL_RED_SIZE,   5,
          EGL_GREEN_SIZE, 5,
          EGL_BLUE_SIZE,  5,
-@@ -620,6 +637,21 @@
+@@ -605,22 +607,51 @@ static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
+ int qemu_egl_init_dpy_x11(EGLNativeDisplayType dpy, DisplayGLMode mode)
+ {
+ #ifdef EGL_KHR_platform_x11
+-    return qemu_egl_init_dpy(dpy, EGL_PLATFORM_X11_KHR, mode);
++    return qemu_egl_init_dpy(dpy, EGL_PLATFORM_X11_KHR, mode,
++                             EGL_WINDOW_BIT, EGL_OPENGL_ES2_BIT);
+ #else
+-    return qemu_egl_init_dpy(dpy, 0, mode);
++    return qemu_egl_init_dpy(dpy, 0, mode,
++                             EGL_WINDOW_BIT, EGL_OPENGL_ES2_BIT);
+ #endif
+ }
+ 
+ int qemu_egl_init_dpy_mesa(EGLNativeDisplayType dpy, DisplayGLMode mode)
+ {
+ #ifdef EGL_MESA_platform_gbm
+-    return qemu_egl_init_dpy(dpy, EGL_PLATFORM_GBM_MESA, mode);
++    return qemu_egl_init_dpy(dpy, EGL_PLATFORM_GBM_MESA, mode,
++                             EGL_WINDOW_BIT, EGL_OPENGL_ES2_BIT);
+ #else
+-    return qemu_egl_init_dpy(dpy, 0, mode);
++    return qemu_egl_init_dpy(dpy, 0, mode,
++                             EGL_WINDOW_BIT, EGL_OPENGL_ES2_BIT);
+ #endif
  }
  #endif
  
-+#ifdef __ANDROID__
++/*
++ * Headless hosts without a DRM render node (e.g. an application sandbox on
++ * Android, where /dev/dri is not available at all) can still reach the GPU
++ * through Mesa's surfaceless platform.  That platform advertises pbuffer
++ * configs only, so the config cannot ask for EGL_WINDOW_BIT, and the
++ * display shaders in ui/shader are "#version 300 es", so an ES3 renderable
++ * is required rather than ES2.
++ */
 +#ifndef EGL_PLATFORM_SURFACELESS_MESA
 +#define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
 +#endif
-+int qemu_egl_init_dpy_android(DisplayGLMode mode)
++#ifndef EGL_OPENGL_ES3_BIT
++#define EGL_OPENGL_ES3_BIT 0x00000040
++#endif
++
++int qemu_egl_init_dpy_surfaceless(DisplayGLMode mode)
 +{
-+    /* No GBM/DRM render node on Android.  mesa's surfaceless platform works
-+     * headless and can reach the GPU through zink -> vulkan -> kgsl. */
-+    (void)mode;
 +    return qemu_egl_init_dpy(EGL_DEFAULT_DISPLAY,
 +                             EGL_PLATFORM_SURFACELESS_MESA,
-+                             DISPLAY_GL_MODE_ES);
++                             mode == DISPLAY_GL_MODE_ON ?
++                             DISPLAY_GL_MODE_ES : mode,
++                             EGL_PBUFFER_BIT,
++                             EGL_OPENGL_ES3_BIT);
 +}
-+#endif
 +
  
  #ifdef WIN32
  int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode)
-@@ -676,7 +708,11 @@
-         EGL_NONE
-     };
-     static const EGLint ctx_att_gles[] = {
-+#ifdef __ANDROID__
-+        EGL_CONTEXT_CLIENT_VERSION, 3,
-+#else
-         EGL_CONTEXT_CLIENT_VERSION, 2,
-+#endif
-         EGL_NONE
-     };
-     bool gles = (qemu_egl_mode == DISPLAY_GL_MODE_ES);
-@@ -720,8 +756,16 @@
+@@ -630,7 +661,8 @@ int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode)
+         mode = DISPLAY_GL_MODE_ES;
+     }
+ 
+-    if (qemu_egl_init_dpy(dpy, 0, mode) < 0) {
++    if (qemu_egl_init_dpy(dpy, 0, mode,
++                          EGL_WINDOW_BIT, EGL_OPENGL_ES2_BIT) < 0) {
+         return -1;
+     }
+ 
+@@ -721,8 +753,17 @@ bool egl_init(const char *rendernode, DisplayGLMode mode, Error **errp)
      }
  #elif defined(CONFIG_GBM)
      if (egl_rendernode_init(rendernode, mode) < 0) {
-+#ifdef __ANDROID__
-+        if (qemu_egl_init_dpy_android(mode) < 0) {
-+            error_setg(errp, "egl: android egl init failed");
+-        error_setg(errp, "egl: render node init failed");
+-        return false;
++        /* No DRM render node: try the surfaceless platform before giving up */
++        if (qemu_egl_init_dpy_surfaceless(mode) < 0) {
++            error_setg(errp, "egl: render node init failed");
 +            return false;
 +        }
 +        qemu_egl_rn_ctx = qemu_egl_init_ctx();
-+#else
-         error_setg(errp, "egl: render node init failed");
-         return false;
-+#endif
++        if (!qemu_egl_rn_ctx) {
++            error_setg(errp, "egl: egl_init_ctx failed");
++            return false;
++        }
++        return true;
      }
  #endif
  
-@@ -752,3 +796,30 @@
-         qemu_egl_display = NULL;
-     }
- }
-+
-+bool qemu_egl_rn_ctx_enter(EGLDisplay *prev_dpy, EGLContext *prev_ctx,
-+                           EGLSurface *prev_draw, EGLSurface *prev_read)
-+{
-+    *prev_dpy  = eglGetCurrentDisplay();
-+    *prev_ctx  = eglGetCurrentContext();
-+    *prev_draw = eglGetCurrentSurface(EGL_DRAW);
-+    *prev_read = eglGetCurrentSurface(EGL_READ);
-+    if (eglMakeCurrent(qemu_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
-+                       qemu_egl_rn_ctx) != EGL_TRUE) {
-+        error_report("%s: bind qemu_egl_rn_ctx failed: 0x%x", __func__, eglGetError());
-+        return false;
-+    }
-+    return true;
-+}
-+
-+void qemu_egl_rn_ctx_leave(EGLDisplay prev_dpy, EGLContext prev_ctx,
-+                           EGLSurface prev_draw, EGLSurface prev_read)
-+{
-+    if (prev_ctx != EGL_NO_CONTEXT) {
-+        if (eglMakeCurrent(prev_dpy, prev_draw, prev_read, prev_ctx) != EGL_TRUE) {
-+            error_report("%s: restore prev ctx failed: 0x%x", __func__, eglGetError());
-+        }
-+    } else {
-+        eglMakeCurrent(qemu_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-+    }
-+}
---- a/ui/console-gl.c
-+++ b/ui/console-gl.c
-@@ -106,6 +106,11 @@
-     GLenum err = glGetError();
-     *texture = 0;
-     *mem_obj = 0;
-+#ifdef __ANDROID__
-+    /* no dma-buf import path on Android/GLES; blob=off does not need it */
-+    (void)err;
-+    return false;
-+#endif
- 
-     if (!epoxy_has_gl_extension("GL_EXT_memory_object") ||
-         !epoxy_has_gl_extension("GL_EXT_memory_object_fd")) {
-@@ -114,7 +119,7 @@
-         return false;
-     }
- 
--#ifdef GL_EXT_memory_object_fd
-+#if defined(GL_EXT_memory_object_fd) && !defined(__ANDROID__)
-     glCreateMemoryObjectsEXT(1, mem_obj);
-     glImportMemoryFdEXT(*mem_obj, size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
- 
---- a/ui/egl-headless.c
-+++ b/ui/egl-headless.c
-@@ -51,9 +51,14 @@
- static void egl_scanout_disable(DisplayChangeListener *dcl)
- {
-     egl_dpy *edpy = container_of(dcl, egl_dpy, dcl);
-+    EGLDisplay p_dpy; EGLContext p_ctx; EGLSurface p_draw, p_read;
- 
-+    if (!qemu_egl_rn_ctx_enter(&p_dpy, &p_ctx, &p_draw, &p_read)) {
-+        return;
-+    }
-     egl_fb_destroy(&edpy->guest_fb);
-     egl_fb_destroy(&edpy->blit_fb);
-+    qemu_egl_rn_ctx_leave(p_dpy, p_ctx, p_draw, p_read);
- }
- 
- static void egl_scanout_texture(DisplayChangeListener *dcl,
+-- 
+2.53.0
+
